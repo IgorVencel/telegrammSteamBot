@@ -1,159 +1,164 @@
 import { Telegraf } from "telegraf";
-import fs from "fs";
+import { Client } from "pg";
 import fetch from "node-fetch";
 import "dotenv/config";
 
+// === Настройки ===
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
 const STEAM_KEY = process.env.STEAM_KEY;
 const MESSAGE_THREAD_ID = process.env.MESSAGE_THREAD_ID
   ? parseInt(process.env.MESSAGE_THREAD_ID, 10)
   : null;
+const DATABASE_URL = process.env.DATABASE_URL;
 
-if (!BOT_TOKEN || !GROUP_CHAT_ID || !STEAM_KEY) {
-  console.error("❌ Отсутствуют обязательные переменные окружения: BOT_TOKEN, GROUP_CHAT_ID или STEAM_KEY");
+if (!BOT_TOKEN || !GROUP_CHAT_ID || !STEAM_KEY || !DATABASE_URL) {
+  console.error("❌ Отсутствуют обязательные переменные окружения");
   process.exit(1);
 }
 
+// === Инициализация Telegram и PostgreSQL ===
 const bot = new Telegraf(BOT_TOKEN);
+const db = new Client({ connectionString: DATABASE_URL });
 
-// Убедимся, что users.json существует
-if (!fs.existsSync("users.json")) {
-  fs.writeFileSync("users.json", "{}");
-  console.log("ℹ️ Создан пустой файл users.json");
+// === Подключение к БД ===
+await db.connect();
+console.log("✅ Подключено к PostgreSQL");
+
+// === Создание таблицы (если не существует) ===
+await db.query(`
+  CREATE TABLE IF NOT EXISTS users (
+    tg_id BIGINT PRIMARY KEY,
+    tg_username TEXT,
+    steam_id TEXT NOT NULL,
+    last_game TEXT,
+    allowed BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+`);
+console.log("✅ Таблица 'users' готова");
+
+// === Вспомогательные функции БД ===
+async function saveUser(tgId, userData) {
+  const { tgUsername, steamId, lastGame, allowed } = userData;
+  await db.query(
+    `
+      INSERT INTO users (tg_id, tg_username, steam_id, last_game, allowed)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (tg_id) DO UPDATE SET
+        tg_username = EXCLUDED.tg_username,
+        steam_id = EXCLUDED.steam_id,
+        last_game = EXCLUDED.last_game,
+        allowed = EXCLUDED.allowed;
+    `,
+    [BigInt(tgId), tgUsername, steamId, lastGame, allowed]
+  );
 }
-let users = JSON.parse(fs.readFileSync("users.json", "utf8"));
 
-function saveUsers() {
-  try {
-    fs.writeFileSync("users.json", JSON.stringify(users, null, 2));
-  } catch (err) {
-    console.error("❌ Ошибка при сохранении users.json:", err);
-  }
+async function getUser(tgId) {
+  const res = await db.query("SELECT * FROM users WHERE tg_id = $1", [BigInt(tgId)]);
+  return res.rows[0] || null;
 }
 
+async function setActive(tgId, allowed) {
+  await db.query("UPDATE users SET allowed = $1 WHERE tg_id = $2", [allowed, BigInt(tgId)]);
+}
+
+async function setLastGame(tgId, game) {
+  await db.query("UPDATE users SET last_game = $1 WHERE tg_id = $2", [game, BigInt(tgId)]);
+}
+
+async function getActiveUsers() {
+  const res = await db.query("SELECT * FROM users WHERE allowed = true");
+  return res.rows;
+}
+
+// === Steam API ===
 async function getSteamInfo(steamId) {
   const url =
     "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?" +
-    new URLSearchParams({
-      key: STEAM_KEY,
-      steamids: steamId,
-    });
+    new URLSearchParams({ key: STEAM_KEY, steamids: steamId });
 
   try {
     const res = await fetch(url);
     const data = await res.json();
-
-    // Логируем для отладки (можно закомментировать в продакшене)
-    // console.log("Steam API response:", JSON.stringify(data));
-
     return data.response?.players?.[0];
   } catch (err) {
-    console.error(`❌ Ошибка при запросе Steam API для ${steamId}:`, err.message);
+    console.error(`❌ Steam API error для ${steamId}:`, err.message);
     return null;
   }
 }
 
-// Команда для проверки chat ID
+// === Команды Telegram ===
 bot.command("chatid", (ctx) => {
   ctx.reply(`Chat ID: ${ctx.chat.id}`);
 });
 
-// Добавить себя в отслеживание
 bot.command("allow_steam", async (ctx) => {
   const steamId = ctx.message.text.split(" ")[1];
-
-  if (!steamId) {
+  if (!steamId || !/^\d{17,}$/.test(steamId)) {
     return ctx.reply(
-      "Используй:\n/allow_steam <steam_id>\n\nSteamID можно взять в настройках профиля."
+      "Используй:\n/allow_steam <steam_id>\n\nSteamID — длинное число (SteamID64)."
     );
   }
 
-  // Валидация: SteamID64 — это число от 76561197960265728 и выше
-  if (!/^\d{17,}$/.test(steamId)) {
-    return ctx.reply("❌ Некорректный SteamID. Убедитесь, что это SteamID64 (длинное число).");
-  }
-
-  users[ctx.from.id] = {
-    tg: ctx.from.username || ctx.from.first_name,
+  await saveUser(ctx.from.id, {
+    tgUsername: ctx.from.username || ctx.from.first_name,
     steamId,
     lastGame: null,
     allowed: true,
-  };
+  });
 
-  saveUsers();
   ctx.reply("👍 Тебя добавил в список отслеживания Steam");
 });
 
-// Отключить отслеживание
-bot.command("stop_steam", (ctx) => {
-  if (!users[ctx.from.id]) {
-    return ctx.reply("Ты не был в списке отслеживания.");
-  }
+bot.command("stop_steam", async (ctx) => {
+  const user = await getUser(ctx.from.id);
+  if (!user) return ctx.reply("Ты не был в списке отслеживания.");
 
-  users[ctx.from.id].allowed = false;
-  saveUsers();
+  await setActive(ctx.from.id, false);
   ctx.reply("🛑 Отслеживание выключено");
 });
 
-// Проверка активности игроков
+// === Проверка активности ===
 async function checkActivity() {
-  console.log("🔍 Запуск проверки активности...");
-  for (const [tgId, u] of Object.entries(users)) {
-    if (!u.allowed) continue;
+  console.log("🔍 Проверка активности игроков...");
+  const users = await getActiveUsers();
 
+  for (const u of users) {
     try {
-      const info = await getSteamInfo(u.steamId);
-      if (!info) {
-        console.log(`ℹ️ Нет данных от Steam для пользователя ${tgId}`);
-        continue;
-      }
+      const info = await getSteamInfo(u.steam_id);
+      if (!info) continue;
 
       const game = info.gameextrainfo || null;
 
-      // Не в игре → сбрасываем статус
       if (!game) {
-        users[tgId].lastGame = null;
+        await setLastGame(u.tg_id, null);
         continue;
       }
 
-      // Если игра не изменилась — пропускаем
-      if (game === users[tgId].lastGame) {
-        continue;
-      }
+      if (game === u.last_game) continue;
 
-      users[tgId].lastGame = game;
-      saveUsers();
+      await setLastGame(u.tg_id, game);
 
       const message = `🎮 ${info.personaname} запустил <b>${game}</b>`;
-
-      const options = {
-        parse_mode: "HTML",
-      };
-
-      if (MESSAGE_THREAD_ID) {
-        options.message_thread_id = MESSAGE_THREAD_ID;
-      }
+      const options = { parse_mode: "HTML" };
+      if (MESSAGE_THREAD_ID) options.message_thread_id = MESSAGE_THREAD_ID;
 
       await bot.telegram.sendMessage(GROUP_CHAT_ID, message, options);
-      console.log(`✅ Отправлено уведомление: ${message}`);
+      console.log(`✅ Уведомление отправлено: ${info.personaname} → ${game}`);
     } catch (err) {
-      console.error(`⚠️ Ошибка при обработке пользователя ${tgId}:`, err.message);
+      console.error(`⚠️ Ошибка для пользователя ${u.tg_id}:`, err.message);
     }
   }
 }
 
-// Запускаем проверку каждую минуту
 setInterval(checkActivity, 60 * 1000);
 
-// Обработка ошибок Telegram
+// === Запуск ===
 bot.catch((err, ctx) => {
-  console.error(`🔥 Telegram ошибка для ${ctx.updateType}:`, err);
+  console.error(`🔥 Telegram ошибка:`, err);
 });
 
 bot.launch();
-console.log("✅ Steam watcher bot запущен");
-console.log("ℹ️ GROUP_CHAT_ID:", GROUP_CHAT_ID);
-if (MESSAGE_THREAD_ID) {
-  console.log("ℹ️ MESSAGE_THREAD_ID:", MESSAGE_THREAD_ID);
-}
+console.log("✅ Steam watcher bot запущен с PostgreSQL");
