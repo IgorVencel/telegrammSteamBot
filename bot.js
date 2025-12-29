@@ -19,6 +19,7 @@ if (!BOT_TOKEN || !GROUP_CHAT_ID || !STEAM_KEY || !DATABASE_URL) {
 }
 
 const awaitingSteamId = new Map();
+const awaitingComment = new Map();
 
 // === Инициализация Telegram и PostgreSQL ===
 const bot = new Telegraf(BOT_TOKEN);
@@ -168,21 +169,24 @@ bot.command("comment", async (ctx) => {
   // Получаем текст после команды: "/comment привет" → "привет"
   const comment = ctx.message.text.split(" ").slice(1).join(" ").trim();
 
-  if (!comment) {
-    return ctx.reply(
-      "Используй:\n/comment <текст>\n\nПример: /comment Жду 5 минут, потом стартую!"
-    );
+  // Если комментарий передан сразу — сохраняем
+  if (comment) {
+    const user = await getUser(ctx.from.id);
+    if (!user) {
+      return ctx.reply("Сначала добавь себя через /allow_steam <steam_id>");
+    }
+    await setComment(ctx.from.id, comment);
+    return ctx.reply(`✅ Комментарий сохранён:\n\n«${comment}»`);
   }
 
-  // Проверяем, есть ли пользователь в БД
+  // Иначе — запрашиваем комментарий отдельно
   const user = await getUser(ctx.from.id);
   if (!user) {
     return ctx.reply("Сначала добавь себя через /allow_steam <steam_id>");
   }
 
-  // Сохраняем комментарий
-  await setComment(ctx.from.id, comment);
-  ctx.reply(`✅ Комментарий сохранён:\n\n«${comment}»`);
+  awaitingComment.set(ctx.from.id, true);
+  ctx.reply("💬 Отправь свой комментарий (можно с эмодзи и форматированием):");
 });
 
 bot.command("status", async (ctx) => {
@@ -274,15 +278,13 @@ async function checkActivity() {
 
 setInterval(checkActivity, 60 * 1000);
 
-// Обработка текста: ожидание SteamID + неизвестные команды
+// Обработка текста: ожидание SteamID / комментария + неизвестные команды
 bot.on("text", async (ctx) => {
   const tgId = ctx.from.id;
 
-  // 1. Проверяем, ожидает ли пользователь ввода SteamID
+  // 1. Если ожидаем SteamID
   if (awaitingSteamId.has(tgId)) {
     const input = ctx.message.text.trim();
-
-    // Проверяем, что это валидный SteamID64
     if (/^\d{17,}$/.test(input)) {
       try {
         await saveUser(tgId, {
@@ -294,29 +296,38 @@ bot.on("text", async (ctx) => {
         ctx.reply("👍 Отлично! Тебя добавил в список отслеживания Steam.");
       } catch (err) {
         if (err.message.includes("unique constraint") || err.message.includes("unique_steam_id")) {
-          ctx.reply(
-            "❌ Этот SteamID уже привязан к другому аккаунту."
-          );
+          ctx.reply("❌ Этот SteamID уже привязан к другому аккаунту.");
         } else {
           console.error("Ошибка при добавлении:", err);
           ctx.reply("⚠️ Не удалось сохранить. Попробуй ещё раз.");
         }
       }
     } else {
-      // Неверный формат — просим снова
       ctx.reply(
         "❌ Это не похоже на SteamID64.\n\n" +
         "Пришлите длинное число (например: 76561198012345678)"
       );
-      return; // остаёмся в ожидании
+      return;
     }
-
-    // Удаляем из ожидания в любом случае
     awaitingSteamId.delete(tgId);
     return;
   }
 
-  // 2. Если не ожидаем SteamID — обрабатываем как неизвестную команду
+  // 2. Если ожидаем комментарий
+  if (awaitingComment.has(tgId)) {
+    const comment = ctx.message.text.trim();
+    if (comment) {
+      await setComment(tgId, comment);
+      ctx.reply(`✅ Комментарий сохранён:\n\n«${comment}»`);
+    } else {
+      ctx.reply("💬 Комментарий не может быть пустым. Попробуй ещё раз:");
+      return;
+    }
+    awaitingComment.delete(tgId);
+    return;
+  }
+
+  // 3. Обработка неизвестных команд
   const text = ctx.message.text?.trim();
   if (!text?.startsWith("/")) return;
 
@@ -329,21 +340,15 @@ bot.on("text", async (ctx) => {
   }
 
   const knownCommands = [
-    "/start",
-    "/help",
-    "/chatid",
-    "/allow_steam",
-    "/stop_steam",
-    "/comment",
-    "/status"
+    "/start", "/help", "/chatid", "/allow_steam",
+    "/stop_steam", "/comment", "/status"
   ];
 
   if (knownCommands.includes(command)) return;
 
-  // Ищем наиболее похожую команду
+  // Поиск похожей команды
   let bestMatch = null;
   let minDistance = Infinity;
-
   for (const known of knownCommands) {
     const dist = levenshtein(command, known);
     if (dist < minDistance && dist <= 3) {
@@ -354,7 +359,7 @@ bot.on("text", async (ctx) => {
 
   let replyText =
     "Извините, видимо вы запустили слишком много ракет 🚀 в последние дни, " +
-    "потому что так опечататься мог только бывалый космонавт.\n"
+    "потому что так опечататься мог только бывалый космонавт.\n";
 
   if (bestMatch) {
     replyText += `\n\nЕбло, попробуй еще раз: ${bestMatch}`;
@@ -363,7 +368,6 @@ bot.on("text", async (ctx) => {
   }
 
   replyText += "\n\nРазработано при пиздеже Alex.F";
-
   return ctx.reply(replyText);
 });
 
