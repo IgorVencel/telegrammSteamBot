@@ -131,23 +131,37 @@ async function checkActivity() {
       const info = await getSteamInfo(u.steam_id);
       if (!info) continue;
 
-      const game = info.gameextrainfo || null;
+      const currentGame = info.gameextrainfo || null;
+      const lastGame = u.last_game;
 
-      if (!game) {
+      // Случай 1: пользователь вышел из игры
+      if (lastGame && !currentGame) {
+        // Отправляем уведомление об окончании
+        const message = `⏹️ ${info.personaname} закончил играть в <b>${lastGame}</b>`;
+        const options = { parse_mode: "HTML" };
+        if (MESSAGE_THREAD_ID) options.message_thread_id = MESSAGE_THREAD_ID;
+
+        await bot.telegram.sendMessage(GROUP_CHAT_ID, message, options);
+        console.log(`✅ Уведомление о выходе: ${info.personaname} → ${lastGame}`);
+
+        // Обновляем last_game на null
         await setLastGame(u.tg_id, null);
-        continue;
       }
 
-      if (game === u.last_game) continue;
+      // Случай 2: пользователь запустил новую игру
+      else if (currentGame && currentGame !== lastGame) {
+        const message = `🎮 ${info.personaname} запустил <b>${currentGame}</b>`;
+        const options = { parse_mode: "HTML" };
+        if (MESSAGE_THREAD_ID) options.message_thread_id = MESSAGE_THREAD_ID;
 
-      await setLastGame(u.tg_id, game);
+        await bot.telegram.sendMessage(GROUP_CHAT_ID, message, options);
+        console.log(`✅ Уведомление о запуске: ${info.personaname} → ${currentGame}`);
 
-      const message = `🎮 ${info.personaname} запустил <b>${game}</b>`;
-      const options = { parse_mode: "HTML" };
-      if (MESSAGE_THREAD_ID) options.message_thread_id = MESSAGE_THREAD_ID;
+        // Обновляем last_game
+        await setLastGame(u.tg_id, currentGame);
+      }
 
-      await bot.telegram.sendMessage(GROUP_CHAT_ID, message, options);
-      console.log(`✅ Уведомление отправлено: ${info.personaname} → ${game}`);
+      // Случай 3: игра не изменилась — ничего не делаем
     } catch (err) {
       console.error(`⚠️ Ошибка для пользователя ${u.tg_id}:`, err.message);
     }
