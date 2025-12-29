@@ -2,6 +2,7 @@ import { Telegraf } from "telegraf";
 import { Client } from "pg";
 import fetch from "node-fetch";
 import "dotenv/config";
+import levenshtein from "levenshtein-edit-distance";
 
 // === Настройки ===
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -155,42 +156,51 @@ async function checkActivity() {
 
 setInterval(checkActivity, 60 * 1000);
 
-// Обработчик неизвестных команд (включая опечатки)
+// Обработчик неизвестных команд с предложением исправления
 bot.on("text", (ctx) => {
   const text = ctx.message.text?.trim();
+  if (!text?.startsWith("/")) return;
 
-  // Проверяем, начинается ли сообщение с "/"
-  if (text?.startsWith("/")) {
-    // Извлекаем команду без аргументов и упоминания бота
-    let command = text.split(" ")[0].toLowerCase();
-
-    // Убираем упоминание бота, если есть: /cmd@MyBot → /cmd
-    if (command.includes("@")) {
-      const [cmd, botName] = command.split("@");
-      if (botName.toLowerCase() === ctx.me.toLowerCase()) {
-        command = cmd;
-      }
-    }
-
-    // Список известных команд
-    const knownCommands = [
-      "/start",
-      "/help",
-      "/chatid",
-      "/allow_steam",
-      "/stop_steam"
-    ];
-
-    // Если команда неизвестна — отправляем шуточный ответ
-    if (!knownCommands.includes(command)) {
-      return ctx.reply(
-        "Извините, видимо вы запустили слишком много ракет 🚀 в последние дни, " +
-        "потому что так опечататься мог только бывалый космонавт.\n" +
-        "Попробуйте еще раз ввести команду не водя своим прекрасным ебалом по клавиатуре.\n\n" +
-        "Разработано при пиздежке Alex.F"
-      );
+  // Извлекаем чистую команду
+  let command = text.split(" ")[0].toLowerCase();
+  if (command.includes("@")) {
+    const [cmd, botName] = command.split("@");
+    if (botName?.toLowerCase() === ctx.me.toLowerCase()) {
+      command = cmd;
     }
   }
+
+  const knownCommands = ["/start", "/help", "/chatid", "/allow_steam", "/stop_steam"];
+
+  // Если команда известна — не мешаем (на случай, если сработал другой обработчик)
+  if (knownCommands.includes(command)) return;
+
+  // Ищем наиболее похожую команду
+  let bestMatch = null;
+  let minDistance = Infinity;
+
+  for (const known of knownCommands) {
+    const dist = levenshtein(command, known);
+    // Учитываем только разумные совпадения (макс. 3 ошибки)
+    if (dist < minDistance && dist <= 3) {
+      minDistance = dist;
+      bestMatch = known;
+    }
+  }
+
+  let replyText =
+    "Извините, видимо вы запустили слишком много ракет 🚀 в последние дни, " +
+    "потому что так опечататься мог только бывалый космонавт.\n"
+
+  if (bestMatch) {
+    replyText += `\n\nЕбло, попробуй еще раз: ${bestMatch}`;
+  } else {
+    replyText += 'Ебать ты на приколе, я вообще хз что ты имел ввиду';
+  }
+
+  replyText += "\n\nРазработано при пиздеже Alex.F";
+
+  return ctx.reply(replyText);
 });
 
 // === Запуск ===
