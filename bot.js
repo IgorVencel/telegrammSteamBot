@@ -274,12 +274,52 @@ async function checkActivity() {
 
 setInterval(checkActivity, 60 * 1000);
 
-// Обработчик неизвестных команд с предложением исправления
-bot.on("text", (ctx) => {
+// Обработка текста: ожидание SteamID + неизвестные команды
+bot.on("text", async (ctx) => {
+  const tgId = ctx.from.id;
+
+  // 1. Проверяем, ожидает ли пользователь ввода SteamID
+  if (awaitingSteamId.has(tgId)) {
+    const input = ctx.message.text.trim();
+
+    // Проверяем, что это валидный SteamID64
+    if (/^\d{17,}$/.test(input)) {
+      try {
+        await saveUser(tgId, {
+          tgUsername: ctx.from.username || ctx.from.first_name,
+          steamId: input,
+          lastGame: null,
+          allowed: true,
+        });
+        ctx.reply("👍 Отлично! Тебя добавил в список отслеживания Steam.");
+      } catch (err) {
+        if (err.message.includes("unique constraint") || err.message.includes("unique_steam_id")) {
+          ctx.reply(
+            "❌ Этот SteamID уже привязан к другому аккаунту."
+          );
+        } else {
+          console.error("Ошибка при добавлении:", err);
+          ctx.reply("⚠️ Не удалось сохранить. Попробуй ещё раз.");
+        }
+      }
+    } else {
+      // Неверный формат — просим снова
+      ctx.reply(
+        "❌ Это не похоже на SteamID64.\n\n" +
+        "Пришлите длинное число (например: 76561198012345678)"
+      );
+      return; // остаёмся в ожидании
+    }
+
+    // Удаляем из ожидания в любом случае
+    awaitingSteamId.delete(tgId);
+    return;
+  }
+
+  // 2. Если не ожидаем SteamID — обрабатываем как неизвестную команду
   const text = ctx.message.text?.trim();
   if (!text?.startsWith("/")) return;
 
-  // Извлекаем чистую команду
   let command = text.split(" ")[0].toLowerCase();
   if (command.includes("@")) {
     const [cmd, botName] = command.split("@");
@@ -298,7 +338,6 @@ bot.on("text", (ctx) => {
     "/status"
   ];
 
-  // Если команда известна — не мешаем (на случай, если сработал другой обработчик)
   if (knownCommands.includes(command)) return;
 
   // Ищем наиболее похожую команду
@@ -307,7 +346,6 @@ bot.on("text", (ctx) => {
 
   for (const known of knownCommands) {
     const dist = levenshtein(command, known);
-    // Учитываем только разумные совпадения (макс. 3 ошибки)
     if (dist < minDistance && dist <= 3) {
       minDistance = dist;
       bestMatch = known;
