@@ -11,6 +11,7 @@
     "dotenv": "^16.4.0",
     "node-fetch": "^3.3.2",
     "telegraf": "^4.15.0",
-    "pg": "^8.11.0"
+    "pg": "^8.11.0",
+    "levenshtein-edit-distance": "^2.0.1"
   }
 }
