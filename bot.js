@@ -195,7 +195,7 @@ bot.on("text", (ctx) => {
   if (bestMatch) {
     replyText += `\n\nЕбло, попробуй еще раз: ${bestMatch}`;
   } else {
-    replyText += 'Ебать ты на приколе, я вообще хз что ты имел ввиду';
+    replyText += '\n\nЕбать ты на приколе, я вообще хз что ты имел ввиду';
   }
 
   replyText += "\n\nРазработано при пиздеже Alex.F";
