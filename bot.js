@@ -56,6 +56,7 @@ try {
   } else {
     console.error("⚠️ Неизвестная ошибка при добавлении ограничения:", err.message);
   }
+}
 
 // === Вспомогательные функции БД ===
 async function saveUser(tgId, userData) {
