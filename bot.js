@@ -40,6 +40,23 @@ await db.query(`
 `);
 console.log("✅ Таблица 'users' готова");
 
+// Добавляем ограничение уникальности на steam_id
+try {
+  await db.query(`
+    ALTER TABLE users
+    ADD CONSTRAINT unique_steam_id UNIQUE (steam_id);
+  `);
+  console.log("✅ Ограничение уникальности на steam_id добавлено");
+} catch (err) {
+  if (err.message.includes('already exists')) {
+    console.log("ℹ️ Ограничение уникальности на steam_id уже существует");
+  } else if (err.message.includes('duplicate key value violates unique constraint')) {
+    console.error("❌ В таблице уже есть дубликаты steam_id! Уберите их вручную.");
+    process.exit(1);
+  } else {
+    console.error("⚠️ Неизвестная ошибка при добавлении ограничения:", err.message);
+  }
+
 // === Вспомогательные функции БД ===
 async function saveUser(tgId, userData) {
   const { tgUsername, steamId, lastGame, allowed } = userData;
