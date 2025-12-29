@@ -1,4 +1,3 @@
-/ db.js
 import { Client } from "pg";
 import config from "./config.js";
 
