@@ -29,11 +29,12 @@ console.log("✅ Подключено к PostgreSQL");
 // === Создание таблицы (если не существует) ===
 await db.query(`
   CREATE TABLE IF NOT EXISTS users (
-    tg_id BIGINT PRIMARY KEY,
+    tg_id BIGINT PRIMARY WHERE,
     tg_username TEXT,
     steam_id TEXT NOT NULL,
     last_game TEXT,
     allowed BOOLEAN DEFAULT true,
+    comment TEXT,  -- 👈 новое поле
     created_at TIMESTAMPTZ DEFAULT NOW()
   );
 `);
@@ -72,6 +73,10 @@ async function setLastGame(tgId, game) {
 async function getActiveUsers() {
   const res = await db.query("SELECT * FROM users WHERE allowed = true");
   return res.rows;
+}
+
+async function setComment(tgId, comment) {
+  await db.query("UPDATE users SET comment = $1 WHERE tg_id = $2", [comment, BigInt(tgId)]);
 }
 
 // === Steam API ===
@@ -121,6 +126,27 @@ bot.command("stop_steam", async (ctx) => {
   ctx.reply("🛑 Отслеживание выключено");
 });
 
+bot.command("comment", async (ctx) => {
+  // Получаем текст после команды: "/comment привет" → "привет"
+  const comment = ctx.message.text.split(" ").slice(1).join(" ").trim();
+
+  if (!comment) {
+    return ctx.reply(
+      "Используй:\n/comment <текст>\n\nПример: /comment Жду 5 минут, потом стартую!"
+    );
+  }
+
+  // Проверяем, есть ли пользователь в БД
+  const user = await getUser(ctx.from.id);
+  if (!user) {
+    return ctx.reply("Сначала добавь себя через /allow_steam <steam_id>");
+  }
+
+  // Сохраняем комментарий
+  await setComment(ctx.from.id, comment);
+  ctx.reply(`✅ Комментарий сохранён:\n\n«${comment}»`);
+});
+
 // === Проверка активности ===
 async function checkActivity() {
   console.log("🔍 Проверка активности игроков...");
@@ -150,14 +176,19 @@ async function checkActivity() {
 
       // Случай 2: пользователь запустил новую игру
       else if (currentGame && currentGame !== lastGame) {
-        const message = `🎮 ${info.personaname} запустил <b>${currentGame}</b>`;
+        let message = `🎮 ${info.personaname} запустил <b>${currentGame}</b>`;
+      
+        // Добавляем комментарий, если он есть
+        if (u.comment) {
+          message += `\n\n💬 <i>${u.comment}</i>`;
+        }
+      
         const options = { parse_mode: "HTML" };
         if (MESSAGE_THREAD_ID) options.message_thread_id = MESSAGE_THREAD_ID;
-
+      
         await bot.telegram.sendMessage(GROUP_CHAT_ID, message, options);
         console.log(`✅ Уведомление о запуске: ${info.personaname} → ${currentGame}`);
-
-        // Обновляем last_game
+      
         await setLastGame(u.tg_id, currentGame);
       }
 
