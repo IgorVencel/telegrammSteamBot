@@ -18,6 +18,8 @@ if (!BOT_TOKEN || !GROUP_CHAT_ID || !STEAM_KEY || !DATABASE_URL) {
   process.exit(1);
 }
 
+const awaitingSteamId = new Map();
+
 // === Инициализация Telegram и PostgreSQL ===
 const bot = new Telegraf(BOT_TOKEN);
 const db = new Client({ connectionString: DATABASE_URL });
@@ -120,20 +122,38 @@ bot.command("chatid", (ctx) => {
 
 bot.command("allow_steam", async (ctx) => {
   const steamId = ctx.message.text.split(" ")[1];
-  if (!steamId || !/^\d{17,}$/.test(steamId)) {
-    return ctx.reply(
-      "Используй:\n/allow_steam <steam_id>\n\nSteamID — длинное число (SteamID64)."
-    );
+
+  // Если SteamID передан сразу — обрабатываем как раньше
+  if (steamId && /^\d{17,}$/.test(steamId)) {
+    try {
+      await saveUser(ctx.from.id, {
+        tgUsername: ctx.from.username || ctx.from.first_name,
+        steamId,
+        lastGame: null,
+        allowed: true,
+      });
+      ctx.reply("👍 Тебя добавил в список отслеживания Steam");
+    } catch (err) {
+      if (err.message.includes("unique constraint") || err.message.includes("unique_steam_id")) {
+        ctx.reply(
+          "❌ Этот SteamID уже привязан к другому Telegram-аккаунту.\n\n" +
+          "Каждый SteamID можно использовать только один раз."
+        );
+      } else {
+        console.error("Ошибка при добавлении пользователя:", err);
+        ctx.reply("⚠️ Произошла ошибка. Попробуйте позже.");
+      }
+    }
+    return;
   }
 
-  await saveUser(ctx.from.id, {
-    tgUsername: ctx.from.username || ctx.from.first_name,
-    steamId,
-    lastGame: null,
-    allowed: true,
-  });
-
-  ctx.reply("👍 Тебя добавил в список отслеживания Steam");
+  // Иначе — запрашиваем SteamID отдельно
+  awaitingSteamId.set(ctx.from.id, true);
+  ctx.reply(
+    "🆔 Пожалуйста, отправь свой SteamID64.\n\n" +
+    "Это длинное число, начинающееся с 7656119...\n" +
+    "Узнать его можно на сайте: https://steamid.io"
+  );
 });
 
 bot.command("stop_steam", async (ctx) => {
@@ -163,6 +183,41 @@ bot.command("comment", async (ctx) => {
   // Сохраняем комментарий
   await setComment(ctx.from.id, comment);
   ctx.reply(`✅ Комментарий сохранён:\n\n«${comment}»`);
+});
+
+bot.command("status", async (ctx) => {
+  const users = await getActiveUsers();
+  
+  if (users.length === 0) {
+    return ctx.reply("📭 Никто не подключил отслеживание Steam.\n\nИспользуй /allow_steam <steam_id> чтобы начать.");
+  }
+
+  let message = "📊 <b>Статус отслеживаемых пользователей:</b>\n\n";
+
+  for (const u of users) {
+    try {
+      const info = await getSteamInfo(u.steam_id);
+      if (!info) {
+        message += `⚠️ <b>${u.tg_username || 'Неизвестно'}</b>: не удалось получить данные\n`;
+        continue;
+      }
+
+      if (info.gameextrainfo) {
+        message += `🎮 <b>${info.personaname}</b> играет в <i>${info.gameextrainfo}</i>\n`;
+      } else {
+        message += `✅ <b>${info.personaname}</b>: в сети, но не в игре\n`;
+      }
+    } catch (err) {
+      message += `⚠️ <b>${u.tg_username || 'Неизвестно'}</b>: ошибка при запросе\n`;
+    }
+  }
+
+  // Ограничиваем длину сообщения (Telegram имеет лимит ~4096 символов)
+  if (message.length > 4000) {
+    message = message.substring(0, 4000) + "\n\n... (список усечён)";
+  }
+
+  ctx.reply(message, { parse_mode: "HTML" });
 });
 
 // === Проверка активности ===
@@ -233,7 +288,15 @@ bot.on("text", (ctx) => {
     }
   }
 
-  const knownCommands = ["/start", "/help", "/chatid", "/allow_steam", "/stop_steam"];
+  const knownCommands = [
+    "/start",
+    "/help",
+    "/chatid",
+    "/allow_steam",
+    "/stop_steam",
+    "/comment",
+    "/status"
+  ];
 
   // Если команда известна — не мешаем (на случай, если сработал другой обработчик)
   if (knownCommands.includes(command)) return;
