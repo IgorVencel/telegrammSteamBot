@@ -29,12 +29,12 @@ console.log("✅ Подключено к PostgreSQL");
 // === Создание таблицы (если не существует) ===
 await db.query(`
   CREATE TABLE IF NOT EXISTS users (
-    tg_id BIGINT PRIMARY WHERE,
+    tg_id BIGINT PRIMARY KEY,
     tg_username TEXT,
     steam_id TEXT NOT NULL,
     last_game TEXT,
     allowed BOOLEAN DEFAULT true,
-    comment TEXT,  -- 👈 новое поле
+    comment TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
   );
 `);
